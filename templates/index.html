@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Manager</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .folders {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+        .folder-section {
+            flex: 1;
+            margin: 0 10px;
+        }
+        .image-container {
+            text-align: center;
+            margin: 20px 0;
+            min-height: 400px;
+        }
+        .image-container img {
+            max-width: 100%;
+            max-height: 500px;
+            border: 1px solid #ddd;
+        }
+        .buttons {
+            display: flex;
+            justify-content: center;
+            margin: 20px 0;
+        }
+        .buttons button {
+            margin: 0 10px;
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        .nav-buttons {
+            display: flex;
+            justify-content: space-between;
+            margin: 20px 0;
+        }
+        .counter {
+            text-align: center;
+            margin: 10px 0;
+            font-size: 16px;
+            font-weight: bold;
+        }
+        .flash-messages {
+            margin: 10px 0;
+        }
+        .flash-message {
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 5px;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+        }
+        /* Directory browser styles */
+        .directory-browser {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        .directory-browser-content {
+            background-color: white;
+            padding: 20px;
+            border-radius: 5px;
+            width: 80%;
+            max-width: 600px;
+            max-height: 80%;
+            overflow-y: auto;
+        }
+        .directory-list {
+            list-style-type: none;
+            padding: 0;
+        }
+        .directory-item {
+            padding: 8px;
+            cursor: pointer;
+            border-bottom: 1px solid #eee;
+        }
+        .directory-item:hover {
+            background-color: #f5f5f5;
+        }
+        .directory-path {
+            margin-bottom: 15px;
+            padding: 8px;
+            background-color: #f5f5f5;
+            overflow-x: auto;
+            white-space: nowrap;
+        }
+        .browser-buttons {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 15px;
+        }
+        .choose-folder-btn {
+            background-color: #4CAF50;
+            color: white;
+            padding: 8px 16px;
+            border: none;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        .cancel-btn {
+            background-color: #f44336;
+            color: white;
+            padding: 8px 16px;
+            border: none;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        .shortcuts-info {
+            margin-top: 20px;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+        }
+        .shortcuts-info h3 {
+            margin-top: 0;
+        }
+        .shortcuts-info ul {
+            padding-left: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Image Manager</h1>
+    
+    <div class="flash-messages">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="flash-message {{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+    </div>
+    
+    <div class="folders">
+        <div class="folder-section">
+            <h3>Input Folder</h3>
+            <div>
+                <input type="text" id="input_folder_display" value="{{ input_folder }}" readonly>
+                <button type="button" onclick="openDirectoryBrowser('input')">Choose Folder</button>
+            </div>
+            <p>Status: {% if input_folder %}Set to {{ input_folder }}{% else %}Not set{% endif %}</p>
+        </div>
+        
+        <div class="folder-section">
+            <h3>Output Folder</h3>
+            <div>
+                <input type="text" id="output_folder_display" value="{{ output_folder }}" readonly>
+                <button type="button" onclick="openDirectoryBrowser('output')">Choose Folder</button>
+            </div>
+            <p>Status: {% if output_folder %}Set to {{ output_folder }}{% else %}Not set{% endif %}</p>
+        </div>
+        
+        <div class="folder-section">
+            <h3>Hoclan2 Folder</h3>
+            <div>
+                <input type="text" id="hoclan2_folder_display" value="{{ hoclan2_folder }}" readonly>
+                <button type="button" onclick="openDirectoryBrowser('hoclan2')">Choose Folder</button>
+            </div>
+            <p>Status: {% if hoclan2_folder %}Set to {{ hoclan2_folder }}{% else %}Not set{% endif %}</p>
+        </div>
+    </div>
+    
+    <div class="counter">
+        {% if image_count > 0 %}
+            Image {{ current_index }} of {{ image_count }}
+        {% else %}
+            No images loaded
+        {% endif %}
+    </div>
+    
+    <div class="image-container">
+        {% if current_image %}
+            <img src="{{ current_image }}" alt="Current image">
+        {% else %}
+            <p>No image to display. Please set an input folder with images.</p>
+        {% endif %}
+    </div>
+    
+    <div class="buttons">
+        <form method="post" id="remember-form">
+            <input type="hidden" name="action" value="remember">
+            <button type="submit" id="remember-button" {% if not current_image or not output_folder %}disabled{% endif %}>Remember</button>
+        </form>
+        
+        <form method="post" id="forget-form">
+            <input type="hidden" name="action" value="forget">
+            <button type="submit" id="forget-button" {% if not current_image %}disabled{% endif %}>Forget</button>
+        </form>
+        
+        <form method="post" id="totally-forget-form">
+            <input type="hidden" name="action" value="totally-forget">
+            <button type="submit" id="totally-forget-button" {% if not current_image or not hoclan2_folder %}disabled{% endif %}>Totally Forget</button>
+        </form>
+    </div>
+    
+    <div class="nav-buttons">
+        <form method="post">
+            <input type="hidden" name="action" value="previous">
+            <button type="submit" id="prev-button" {% if not current_image or current_index == 1 %}disabled{% endif %}>Previous</button>
+        </form>
+        
+        <form method="post">
+            <input type="hidden" name="action" value="next">
+            <button type="submit" id="next-button" {% if not current_image or current_index == image_count %}disabled{% endif %}>Next</button>
+        </form>
+    </div>
+    
+    <div class="shortcuts-info">
+        <h3>Keyboard Shortcuts</h3>
+        <ul>
+            <li><strong>Left Arrow:</strong> Previous image</li>
+            <li><strong>Right Arrow:</strong> Next image</li>
+            <li><strong>Up Arrow:</strong> Remember</li>
+            <li><strong>Down Arrow:</strong> Totally Forget</li>
+            <li><strong>R:</strong> Remember</li>
+            <li><strong>F:</strong> Forget</li>
+            <li><strong>T:</strong> Totally Forget</li>
+        </ul>
+    </div>
+    
+    <!-- Directory Browser Modal -->
+    <div id="directory-browser" class="directory-browser">
+        <div class="directory-browser-content">
+            <h3>Select a Folder</h3>
+            <div id="current-path" class="directory-path"></div>
+            <ul id="directory-list" class="directory-list"></ul>
+            <div class="browser-buttons">
+                <button type="button" class="cancel-btn" onclick="closeDirectoryBrowser()">Cancel</button>
+                <button type="button" class="choose-folder-btn" id="select-folder-btn">Select This Folder</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Hidden forms for folder selection submission -->
+    <form id="input-folder-form" method="post" style="display: none;">
+        <input type="hidden" name="folder_path" id="input-folder-path">
+        <input type="hidden" name="set_input_folder" value="1">
+    </form>
+    
+    <form id="output-folder-form" method="post" style="display: none;">
+        <input type="hidden" name="folder_path" id="output-folder-path">
+        <input type="hidden" name="set_output_folder" value="1">
+    </form>
+    
+    <form id="hoclan2-folder-form" method="post" style="display: none;">
+        <input type="hidden" name="folder_path" id="hoclan2-folder-path">
+        <input type="hidden" name="set_hoclan2_folder" value="1">
+    </form>
+    
+    <script>
+        // Store the current folder type being selected
+        let currentFolderType = '';
+        let currentPath = '/';
+        
+        // Add keyboard navigation
+        document.addEventListener('keydown', function(event) {
+            // Left arrow key for previous
+            if (event.key === 'ArrowLeft') {
+                const prevButton = document.getElementById('prev-button');
+                if (prevButton && !prevButton.disabled) {
+                    prevButton.click();
+                }
+            }
+            
+            // Right arrow key for next
+            if (event.key === 'ArrowRight') {
+                const nextButton = document.getElementById('next-button');
+                if (nextButton && !nextButton.disabled) {
+                    nextButton.click();
+                }
+            }
+            
+            // Up arrow key for Remember
+            if (event.key === 'ArrowUp') {
+                const rememberButton = document.getElementById('remember-button');
+                if (rememberButton && !rememberButton.disabled) {
+                    rememberButton.click();
+                }
+            }
+            
+            // Down arrow key for Totally Forget
+            if (event.key === 'ArrowDown') {
+                const totallyForgetButton = document.getElementById('totally-forget-button');
+                if (totallyForgetButton && !totallyForgetButton.disabled) {
+                    totallyForgetButton.click();
+                }
+            }
+            
+            // R key for Remember
+            if (event.key === 'r' || event.key === 'R') {
+                const rememberButton = document.getElementById('remember-button');
+                if (rememberButton && !rememberButton.disabled) {
+                    rememberButton.click();
+                }
+            }
+            
+            // F key for Forget
+            if (event.key === 'f' || event.key === 'F') {
+                const forgetButton = document.getElementById('forget-button');
+                if (forgetButton && !forgetButton.disabled) {
+                    forgetButton.click();
+                }
+            }
+            
+            // T key for Totally Forget
+            if (event.key === 't' || event.key === 'T') {
+                const totallyForgetButton = document.getElementById('totally-forget-button');
+                if (totallyForgetButton && !totallyForgetButton.disabled) {
+                    totallyForgetButton.click();
+                }
+            }
+        });
+        
+        // Directory browser functions
+        function openDirectoryBrowser(folderType) {
+            currentFolderType = folderType;
+            const browser = document.getElementById('directory-browser');
+            browser.style.display = 'flex';
+            
+            // Load initial directories
+            loadDirectories('/');
+        }
+        
+        function closeDirectoryBrowser() {
+            document.getElementById('directory-browser').style.display = 'none';
+        }
+        
+        function loadDirectories(path) {
+            currentPath = path;
+            document.getElementById('current-path').textContent = path;
+            
+            // Use fetch to get directory contents
+            const formData = new FormData();
+            formData.append('path', path);
+            
+            fetch('/list_directories', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                    return;
+                }
+                
+                const directoryList = document.getElementById('directory-list');
+                directoryList.innerHTML = '';
+                
+                // Add parent directory if not at root
+                if (data.parent) {
+                    const parentItem = document.createElement('li');
+                    parentItem.className = 'directory-item';
+                    parentItem.textContent = '.. (Parent Directory)';
+                    parentItem.onclick = function() {
+                        loadDirectories(data.parent);
+                    };
+                    directoryList.appendChild(parentItem);
+                }
+                
+                // Add directories
+                data.directories.forEach(dir => {
+                    const dirItem = document.createElement('li');
+                    dirItem.className = 'directory-item';
+                    dirItem.textContent = '📁 ' + dir;
+                    dirItem.onclick = function() {
+                        const newPath = data.current_path === '/' ? 
+                            '/' + dir : data.current_path + '/' + dir;
+                        loadDirectories(newPath);
+                    };
+                    directoryList.appendChild(dirItem);
+                });
+                
+                // Update select button action
+                document.getElementById('select-folder-btn').onclick = function() {
+                    selectCurrentFolder();
+                };
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Failed to load directories: ' + error);
+            });
+        }
+        
+        function selectCurrentFolder() {
+            // Set the path in the appropriate form and submit
+            if (currentFolderType === 'input') {
+                document.getElementById('input-folder-path').value = currentPath;
+                document.getElementById('input-folder-form').submit();
+            } else if (currentFolderType === 'output') {
+                document.getElementById('output-folder-path').value = currentPath;
+                document.getElementById('output-folder-form').submit();
+            } else if (currentFolderType === 'hoclan2') {
+                document.getElementById('hoclan2-folder-path').value = currentPath;
+                document.getElementById('hoclan2-folder-form').submit();
+            }
+            
+            closeDirectoryBrowser();
+        }
+    </script>
+</body>
+</html>
