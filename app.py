@@ -3,9 +3,25 @@ import os
 import shutil
 import glob
 from werkzeug.utils import secure_filename
+from flask_httpauth import HTTPBasicAuth
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.secret_key = 'your_secret_key'  # Needed for flash messages
+
+# Set up authentication
+auth = HTTPBasicAuth()
+
+# Define users with secure password hashing
+users = {
+    "admin": generate_password_hash("admin2")  # Change this to your desired username/password
+}
+
+@auth.verify_password
+def verify_password(username, password):
+    if username in users and check_password_hash(users[username], password):
+        return username
+    return None
 
 # Global variables to store folder paths
 INPUT_FOLDER = ""
@@ -27,6 +43,7 @@ def get_available_directories():
         return ['/']  # Start from the root directory
 
 @app.route('/list_directories', methods=['POST'])
+@auth.login_required
 def list_directories():
     path = request.form.get('path', '/')
     try:
@@ -38,6 +55,7 @@ def list_directories():
         return {'error': str(e)}
 
 @app.route('/', methods=['GET', 'POST'])
+@auth.login_required
 def index():
     global INPUT_FOLDER, OUTPUT_FOLDER, HOCLAN2_FOLDER, images, current_index
     
@@ -134,8 +152,7 @@ def load_images_from_folder(folder_path):
     
     for ext in extensions:
         image_files.extend(glob.glob(os.path.join(folder_path, f"*.{ext}")))
-        image_files.extend(glob.glob(os.path.join(folder_path, f"*.{ext.upper()}")))
-    
+
     return sorted(image_files)
 
 def move_image(image_path, source_folder, destination_folder):
@@ -154,10 +171,11 @@ def move_image(image_path, source_folder, destination_folder):
 
 # Route to serve images from input folder
 @app.route('/images/<filename>')
+@auth.login_required
 def serve_image(filename):
     return send_from_directory(INPUT_FOLDER, filename)
 
 if __name__ == '__main__':
     # Create a static folder for serving static files
     os.makedirs('static', exist_ok=True)
-    app.run(debug=True)
+    app.run(debug=False, host='0.0.0.0', port=5000)  # Disabled debug mode for security
