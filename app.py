@@ -1,91 +1,143 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, send_from_directory
+from flask import Flask, render_template, request, redirect, url_for, flash, send_file
 import os
-import shutil
-import glob
-from werkzeug.utils import secure_filename
-from flask_httpauth import HTTPBasicAuth
-from werkzeug.security import generate_password_hash, check_password_hash
+import io
+import tempfile
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 
 app = Flask(__name__)
 app.secret_key = 'your_secret_key'  # Needed for flash messages
 
-# Set up authentication
-auth = HTTPBasicAuth()
+# Global variables to store Google Drive folder IDs
+INPUT_FOLDER_ID = ""
+OUTPUT_FOLDER_ID = ""
+HOCLAN2_FOLDER_ID = ""
 
-# Define users with secure password hashing
-users = {
-    "admin": generate_password_hash("admin2")  # Change this to your desired username/password
-}
-
-@auth.verify_password
-def verify_password(username, password):
-    if username in users and check_password_hash(users[username], password):
-        return username
-    return None
-
-# Global variables to store folder paths
-INPUT_FOLDER = ""
-OUTPUT_FOLDER = ""
-HOCLAN2_FOLDER = ""
+# Google Drive API scopes
+SCOPES = ['https://www.googleapis.com/auth/drive']
 
 # List to store images from input folder
 images = []
 current_index = 0
 
-# Directory structure for our app
-def get_available_directories():
-    """Get a list of directories for selection in the UI."""
-    # Get the root directory of the user's system
-    if os.name == 'nt':  # Windows
-        drives = ['%s:' % d for d in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' if os.path.exists('%s:' % d)]
-        return drives
-    else:  # Unix-like
-        return ['/']  # Start from the root directory
+# Google Drive service
+drive_service = None
 
-@app.route('/list_directories', methods=['POST'])
-@auth.login_required
-def list_directories():
-    path = request.form.get('path', '/')
-    try:
-        directories = [d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d))]
-        files = [f for f in os.listdir(path) if os.path.isfile(os.path.join(path, f))]
-        parent = os.path.dirname(path) if path != '/' else None
-        return {'directories': directories, 'files': files, 'parent': parent, 'current_path': path}
-    except Exception as e:
-        return {'error': str(e)}
+def authenticate_google_drive():
+    """Authenticate with Google Drive API."""
+    creds = None
+    # The file token.json stores the user's access and refresh tokens
+    if os.path.exists('token.json'):
+        creds = Credentials.from_authorized_user_info(
+            json.loads(open('token.json').read()), SCOPES)
+    
+    # If there are no valid credentials, let the user log in
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                'credentials.json', SCOPES)
+            creds = flow.run_local_server(port=0)
+        
+        # Save the credentials for the next run
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
+    
+    # Return the drive service
+    return build('drive', 'v3', credentials=creds)
+
+def get_drive_folders():
+    """Get list of folders from Google Drive."""
+    global drive_service
+    
+    if not drive_service:
+        drive_service = authenticate_google_drive()
+    
+    results = drive_service.files().list(
+        q="mimeType='application/vnd.google-apps.folder' and trashed=false",
+        spaces='drive',
+        fields='files(id, name)'
+    ).execute()
+    
+    return results.get('files', [])
+
+def get_files_in_folder(folder_id):
+    """Get list of files in a Google Drive folder."""
+    global drive_service
+    
+    if not drive_service:
+        drive_service = authenticate_google_drive()
+    
+    # Query for image files only
+    query = f"'{folder_id}' in parents and trashed=false and (mimeType contains 'image/')"
+    
+    results = drive_service.files().list(
+        q=query,
+        spaces='drive',
+        fields='files(id, name, mimeType)'
+    ).execute()
+    
+    return results.get('files', [])
+
+def move_file(file_id, source_folder_id, destination_folder_id):
+    """Move a file from one Google Drive folder to another."""
+    global drive_service
+    
+    if not drive_service:
+        drive_service = authenticate_google_drive()
+    
+    # Get the current parents
+    file = drive_service.files().get(
+        fileId=file_id,
+        fields='parents'
+    ).execute()
+    
+    previous_parents = ",".join(file.get('parents'))
+    
+    # Move the file to the new folder
+    file = drive_service.files().update(
+        fileId=file_id,
+        addParents=destination_folder_id,
+        removeParents=previous_parents,
+        fields='id, parents'
+    ).execute()
+    
+    return file
 
 @app.route('/', methods=['GET', 'POST'])
-@auth.login_required
 def index():
-    global INPUT_FOLDER, OUTPUT_FOLDER, HOCLAN2_FOLDER, images, current_index
+    global INPUT_FOLDER_ID, OUTPUT_FOLDER_ID, HOCLAN2_FOLDER_ID, images, current_index, drive_service
+    
+    # Initialize Google Drive service if not already done
+    if not drive_service:
+        try:
+            drive_service = authenticate_google_drive()
+        except Exception as e:
+            flash(f'Error authenticating with Google Drive: {str(e)}', 'error')
     
     if request.method == 'POST':
         if 'set_input_folder' in request.form:
-            INPUT_FOLDER = request.form['folder_path']
-            # Validate if directory exists
-            if not os.path.isdir(INPUT_FOLDER):
-                flash('Input folder does not exist!', 'error')
-            else:
-                # Load images from input folder
-                images = load_images_from_folder(INPUT_FOLDER)
+            INPUT_FOLDER_ID = request.form['folder_id']
+            # Load images from input folder
+            try:
+                image_files = get_files_in_folder(INPUT_FOLDER_ID)
+                images = image_files
                 current_index = 0
                 flash('Input folder set successfully!', 'success')
+            except Exception as e:
+                flash(f'Error loading from Google Drive: {str(e)}', 'error')
         
         elif 'set_output_folder' in request.form:
-            OUTPUT_FOLDER = request.form['folder_path']
-            # Validate if directory exists
-            if not os.path.isdir(OUTPUT_FOLDER):
-                flash('Output folder does not exist!', 'error')
-            else:
-                flash('Output folder set successfully!', 'success')
+            OUTPUT_FOLDER_ID = request.form['folder_id']
+            flash('Output folder set successfully!', 'success')
         
         elif 'set_hoclan2_folder' in request.form:
-            HOCLAN2_FOLDER = request.form['folder_path']
-            # Validate if directory exists
-            if not os.path.isdir(HOCLAN2_FOLDER):
-                flash('Hoclan2 folder does not exist!', 'error')
-            else:
-                flash('Hoclan2 folder set successfully!', 'success')
+            HOCLAN2_FOLDER_ID = request.form['folder_id']
+            flash('Hoclan2 folder set successfully!', 'success')
         
         elif 'action' in request.form:
             if not images:
@@ -96,26 +148,32 @@ def index():
             current_image = images[current_index]
             
             if action == 'remember':
-                if not OUTPUT_FOLDER:
+                if not OUTPUT_FOLDER_ID:
                     flash('Output folder not set!', 'error')
                 else:
-                    move_image(current_image, INPUT_FOLDER, OUTPUT_FOLDER)
-                    flash('Image moved to Output folder!', 'success')
-                    # Remove from list and update index
-                    images.pop(current_index)
-                    if current_index >= len(images) and len(images) > 0:
-                        current_index = len(images) - 1
+                    try:
+                        move_file(current_image['id'], INPUT_FOLDER_ID, OUTPUT_FOLDER_ID)
+                        flash('Image moved to Output folder!', 'success')
+                        # Remove from list and update index
+                        images.pop(current_index)
+                        if current_index >= len(images) and len(images) > 0:
+                            current_index = len(images) - 1
+                    except Exception as e:
+                        flash(f'Error moving file: {str(e)}', 'error')
             
             elif action == 'totally-forget':
-                if not HOCLAN2_FOLDER:
+                if not HOCLAN2_FOLDER_ID:
                     flash('Hoclan2 folder not set!', 'error')
                 else:
-                    move_image(current_image, INPUT_FOLDER, HOCLAN2_FOLDER)
-                    flash('Image moved to Hoclan2 folder!', 'success')
-                    # Remove from list and update index
-                    images.pop(current_index)
-                    if current_index >= len(images) and len(images) > 0:
-                        current_index = len(images) - 1
+                    try:
+                        move_file(current_image['id'], INPUT_FOLDER_ID, HOCLAN2_FOLDER_ID)
+                        flash('Image moved to Hoclan2 folder!', 'success')
+                        # Remove from list and update index
+                        images.pop(current_index)
+                        if current_index >= len(images) and len(images) > 0:
+                            current_index = len(images) - 1
+                    except Exception as e:
+                        flash(f'Error moving file: {str(e)}', 'error')
             
             elif action == 'forget':
                 flash('Image remained in Input folder!', 'info')
@@ -129,53 +187,61 @@ def index():
                     current_index -= 1
     
     # Prepare data for template
+    folders = []
+    try:
+        folders = get_drive_folders()
+    except Exception as e:
+        flash(f'Error fetching Google Drive folders: {str(e)}', 'error')
+    
     current_image = None
+    current_image_url = None
+    
     if images and current_index < len(images):
-        current_image = os.path.basename(images[current_index])
-        current_image_path = f"/images/{current_image}"
-    else:
-        current_image_path = None
+        current_image = images[current_index]
+        current_image_url = f"/images/{current_image['id']}"
     
     return render_template('index.html', 
-                          input_folder=INPUT_FOLDER,
-                          output_folder=OUTPUT_FOLDER,
-                          hoclan2_folder=HOCLAN2_FOLDER,
-                          current_image=current_image_path,
+                          input_folder_id=INPUT_FOLDER_ID,
+                          output_folder_id=OUTPUT_FOLDER_ID,
+                          hoclan2_folder_id=HOCLAN2_FOLDER_ID,
+                          current_image=current_image_url,
                           image_count=len(images) if images else 0,
                           current_index=current_index + 1 if images else 0,
-                          available_directories=get_available_directories())
+                          available_folders=folders)
 
-def load_images_from_folder(folder_path):
-    # Get all image files with common extensions
-    extensions = ['png', 'jpg', 'jpeg', 'gif', 'bmp']
-    image_files = []
+# Route to serve images from Google Drive
+@app.route('/images/<file_id>')
+def serve_image(file_id):
+    global drive_service
     
-    for ext in extensions:
-        image_files.extend(glob.glob(os.path.join(folder_path, f"*.{ext}")))
-
-    return sorted(image_files)
-
-def move_image(image_path, source_folder, destination_folder):
-    filename = os.path.basename(image_path)
-    destination_path = os.path.join(destination_folder, filename)
+    if not drive_service:
+        drive_service = authenticate_google_drive()
     
-    # Handle if file already exists in destination
-    counter = 1
-    while os.path.exists(destination_path):
-        name, ext = os.path.splitext(filename)
-        new_filename = f"{name}_{counter}{ext}"
-        destination_path = os.path.join(destination_folder, new_filename)
-        counter += 1
+    request = drive_service.files().get_media(fileId=file_id)
+    file = io.BytesIO()
+    downloader = MediaIoBaseDownload(file, request)
+    done = False
     
-    shutil.move(image_path, destination_path)
-
-# Route to serve images from input folder
-@app.route('/images/<filename>')
-@auth.login_required
-def serve_image(filename):
-    return send_from_directory(INPUT_FOLDER, filename)
+    while done is False:
+        status, done = downloader.next_chunk()
+    
+    file.seek(0)
+    
+    # Create a temporary file to serve
+    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+        temp_file.write(file.read())
+        temp_path = temp_file.name
+    
+    # Get file metadata to determine mime type
+    file_metadata = drive_service.files().get(fileId=file_id, fields='mimeType,name').execute()
+    
+    return send_file(temp_path, mimetype=file_metadata['mimeType'])
 
 if __name__ == '__main__':
     # Create a static folder for serving static files
     os.makedirs('static', exist_ok=True)
-    app.run(debug=False, host='0.0.0.0', port=5000)  # Disabled debug mode for security
+    
+    # Import JSON here to avoid circular import
+    import json
+    
+    app.run(debug=True)
